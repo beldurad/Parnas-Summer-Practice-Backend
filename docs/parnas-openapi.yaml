@@ -1,0 +1,3230 @@
+openapi: 3.0.3
+info:
+  title: Parnas — API платформы кампаний и дивидендных выплат
+  version: 1.1.0-local
+  description: 'REST API учебной платформы кампаний на локальном EVM-совместимом блокчейне.
+
+
+    Документ покрывает UC-001–UC-016:
+
+
+    - публичную главную страницу, поиск и просмотр кампаний;
+
+    - упрощённую регистрацию и вход по адресу локального криптокошелька;
+
+    - профиль пользователя и личный кабинет;
+
+    - создание кампании с целевой суммой и дедлайном;
+
+    - подготовку и подтверждение блокчейн-транзакций взноса;
+
+    - автоматическое закрытие кампании при достижении цели;
+
+    - завершение кампании после дедлайна без достижения цели;
+
+    - внесение профита создателем и пропорциональное распределение между вкладчиками;
+
+    - публичную историю взносов, выплат и транзакций.
+
+
+    Архитектурные соглашения учебной версии:
+
+
+    1. Платформа работает с локальной сетью Hardhat, Anvil, Ganache или другой EVM-совместимой тестовой сетью.
+
+    2. Для регистрации и входа используется адрес кошелька без challenge-подписи. Это сознательное упрощение для учебного
+    стенда и не должно использоваться в production.
+
+    3. Блокчейн-транзакции по-прежнему подписываются приватным ключом отправителя. Обычно подпись выполняет MetaMask или тестовый
+    signer локальной сети; приватный ключ не передаётся REST API.
+
+    4. API формирует данные неподписанной EVM-транзакции, клиент подписывает и отправляет её в локальный блокчейн.
+
+    5. После отправки клиент передаёт `transactionHash`; backend проверяет receipt и события контракта.
+
+    6. Денежные величины передаются строками в минимальных единицах токена (`raw`), чтобы исключить потерю точности.
+
+    7. Смарт-контракт блокирует превышение целевой суммы, новые взносы после достижения цели и повторную выплату профита.
+
+    8. Локальная база данных используется как индексированная проекция блокчейна.
+
+
+    Базовый формат ошибок — `application/problem+json` с машинным кодом `code`.
+
+    '
+  contact:
+    name: Команда Parnas API
+    email: api@parnas.example
+  license:
+    name: Учебный проект
+servers:
+- url: http://localhost:8080/api/v1
+  description: Локальный backend учебного проекта
+tags:
+- name: Platform
+  description: Главная страница с компактными карточками популярных и активных кампаний.
+- name: Authentication
+  description: Упрощённая учебная регистрация и авторизация по адресу локального кошелька. Владение адресом при входе отдельно
+    не доказывается.
+- name: Users
+  description: Публичные профили и личный кабинет.
+- name: Campaigns
+  description: Создание, поиск, просмотр и управление кампаниями.
+- name: Contributions
+  description: Взносы участников и их блокчейн-подтверждение.
+- name: Payouts
+  description: Внесение профита и прозрачное распределение выплат.
+- name: Transactions
+  description: Публичная информация о блокчейн-транзакциях.
+- name: Service
+  description: Служебные операции keeper/indexer. Не используются пользовательским UI.
+security: []
+paths:
+  /platform/home:
+    get:
+      tags:
+      - Platform
+      operationId: getPlatformHome
+      summary: Получить данные главной страницы
+      description: Реализует UC-001. Возвращает только название платформы и компактные карточки популярных и активных кампаний.
+        Полное описание, создатель, адрес контракта, выплаты и транзакции доступны через `GET /campaigns/{campaignId}`. Если
+        кампаний нет, массивы возвращаются пустыми.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/PopularLimit'
+      - $ref: '#/components/parameters/ActiveLimit'
+      responses:
+        '200':
+          description: Главная страница успешно сформирована.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HomePageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns:
+    get:
+      tags:
+      - Campaigns
+      operationId: listCampaigns
+      summary: Найти и получить список кампаний
+      description: Реализует UC-002 и UC-003. Поддерживает поиск, фильтрацию, сортировку и пагинацию. Элементы списка содержат
+        только данные, необходимые для выбора кампании; полная информация возвращается отдельным endpoint страницы кампании.
+        Если совпадений нет, API возвращает `200 OK` и пустой массив `items`.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/SearchQuery'
+      - $ref: '#/components/parameters/CampaignStatusQuery'
+      - $ref: '#/components/parameters/CreatorIdQuery'
+      - $ref: '#/components/parameters/SortCampaigns'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список кампаний получен.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags:
+      - Campaigns
+      operationId: createCampaign
+      summary: Создать кампанию и подготовить транзакцию развёртывания
+      description: 'Реализует UC-013. Создаёт локальную запись в статусе `PENDING_DEPLOYMENT` и формирует неподписанную транзакцию
+        вызова фабрики смарт-контрактов.
+
+
+        После подписи и отправки транзакции клиент обязан вызвать `/campaigns/{campaignId}/deployment-confirmations`. Кампания
+        станет публично доступна для взносов только после подтверждения события `CampaignCreated`.'
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/XRequestIdOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignRequest'
+      responses:
+        '201':
+          description: Черновик кампании создан; транзакция развёртывания подготовлена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignCreationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}:
+    get:
+      tags:
+      - Campaigns
+      operationId: getCampaign
+      summary: Получить полную публичную информацию о кампании
+      description: Реализует UC-004. Возвращает описание, автора, даты, статус, финансовый прогресс, агрегаты выплат и ссылки
+        на блокчейн-транзакции.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IncludeRecentTransactions'
+      responses:
+        '200':
+          description: Кампания найдена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/deployment-confirmations:
+    post:
+      tags:
+      - Campaigns
+      operationId: confirmCampaignDeployment
+      summary: Передать хеш транзакции развёртывания кампании
+      description: Регистрирует отправленную пользователем транзакцию. Ответ `202` означает начало проверки, но не финальное
+        подтверждение блокчейном.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionConfirmationRequest'
+      responses:
+        '202':
+          description: Транзакция принята на проверку.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/management:
+    get:
+      tags:
+      - Campaigns
+      operationId: getCampaignManagement
+      summary: Получить данные управления собственной кампанией
+      description: Реализует UC-014. Доступно только создателю кампании. Содержит историю взносов и вычисленные доступные
+        действия.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      responses:
+        '200':
+          description: Данные управления получены.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignManagementView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/contributors:
+    get:
+      tags:
+      - Contributions
+      operationId: listCampaignContributors
+      summary: Получить публичный список вкладчиков кампании
+      description: Возвращает адреса кошельков, суммы подтверждённых вкладов и доли. Персональные поля профиля не раскрываются.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список вкладчиков получен.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContributorListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/contributions:
+    get:
+      tags:
+      - Contributions
+      operationId: listCampaignContributions
+      summary: Получить историю взносов кампании
+      description: Публичный журнал подтверждённых и находящихся в обработке взносов. История неизменяема на уровне блокчейна.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/TransactionStatusQuery'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: История взносов получена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContributionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/contributions/prepare:
+    post:
+      tags:
+      - Contributions
+      operationId: prepareContribution
+      summary: Проверить взнос и подготовить неподписанную транзакцию
+      description: 'Реализует шаги 3–5 UC-009. Проверяет статус кампании, дедлайн, остаток до цели и баланс/allowance токена,
+        затем формирует EVM-транзакцию.
+
+
+        Смарт-контракт повторяет проверки атомарно. Поэтому даже после успешного ответа транзакция может быть отклонена блокчейном,
+        если другой вклад достиг цели раньше.'
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepareContributionRequest'
+      responses:
+        '201':
+          description: Проверки пройдены; транзакция взноса подготовлена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparedContributionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт состояния кампании, взноса, idempotency key или блокчейн-транзакции.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                goalReached:
+                  $ref: '#/components/examples/CampaignGoalReachedConflict'
+                campaignClosed:
+                  summary: Кампания закрыта
+                  value:
+                    type: https://api.parnas.example/problems/campaign-not-open
+                    title: Взнос недоступен
+                    status: 409
+                    code: CAMPAIGN_NOT_OPEN
+                    detail: Взносы разрешены только для кампании в статусе OPEN.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/contributions/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+                exceedsRemaining:
+                  summary: Сумма превышает остаток
+                  value:
+                    type: https://api.parnas.example/problems/contribution-exceeds-remaining
+                    title: Слишком большой взнос
+                    status: 409
+                    code: CONTRIBUTION_EXCEEDS_REMAINING_AMOUNT
+                    detail: Сумма взноса превышает остаток до целевой суммы.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/contributions/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/contributions/confirm:
+    post:
+      tags:
+      - Contributions
+      operationId: confirmContribution
+      summary: Передать хеш отправленной транзакции взноса
+      description: Реализует шаги 6–8 UC-009. Индексатор проверяет отправителя, контракт, сумму, событие `ContributionReceived`
+        и число подтверждений.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmContributionRequest'
+      responses:
+        '202':
+          description: Транзакция взноса принята на асинхронную проверку.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContributionAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт состояния кампании, взноса, idempotency key или блокчейн-транзакции.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                goalReached:
+                  $ref: '#/components/examples/CampaignGoalReachedConflict'
+                campaignClosed:
+                  summary: Кампания закрыта
+                  value:
+                    type: https://api.parnas.example/problems/campaign-not-open
+                    title: Взнос недоступен
+                    status: 409
+                    code: CAMPAIGN_NOT_OPEN
+                    detail: Взносы разрешены только для кампании в статусе OPEN.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/contributions/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+                exceedsRemaining:
+                  summary: Сумма превышает остаток
+                  value:
+                    type: https://api.parnas.example/problems/contribution-exceeds-remaining
+                    title: Слишком большой взнос
+                    status: 409
+                    code: CONTRIBUTION_EXCEEDS_REMAINING_AMOUNT
+                    detail: Сумма взноса превышает остаток до целевой суммы.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/contributions/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/payouts:
+    get:
+      tags:
+      - Payouts
+      operationId: listCampaignPayouts
+      summary: Получить историю выплат кампании
+      description: Реализует UC-005. При отсутствии выплат возвращается `200 OK` с пустым массивом.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: История выплат получена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/payouts/prepare:
+    post:
+      tags:
+      - Payouts
+      operationId: preparePayout
+      summary: Подготовить транзакцию внесения и распределения профита
+      description: 'Реализует UC-015. Доступно только создателю кампании, когда цель достигнута и выплата ранее не выполнялась.
+
+
+        Контракт распределяет профит пропорционально сумме подтверждённых вкладов. Базовая формула: `floor(profit × contribution
+        / totalRaised)`. Остаток минимальных единиц передаётся вкладчику с максимальным вкладом; при равенстве — кошельку
+        с лексикографически меньшим адресом. Это обеспечивает детерминированность и распределение всей суммы.'
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparePayoutRequest'
+      responses:
+        '201':
+          description: Транзакция выплаты подготовлена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparedPayoutResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Выплата недоступна из-за состояния кампании, существующей выплаты или конфликта транзакции.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                alreadyExecuted:
+                  $ref: '#/components/examples/PayoutAlreadyExecutedConflict'
+                goalNotReached:
+                  summary: Цель не достигнута
+                  value:
+                    type: https://api.parnas.example/problems/payout-not-allowed
+                    title: Выплата недоступна
+                    status: 409
+                    code: PAYOUT_NOT_ALLOWED
+                    detail: Профит можно распределить только после достижения целевой суммы.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/payouts/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+                noContributors:
+                  summary: Нет вкладчиков
+                  value:
+                    type: https://api.parnas.example/problems/no-contributors
+                    title: Некому распределять профит
+                    status: 409
+                    code: NO_CONFIRMED_CONTRIBUTORS
+                    detail: В кампании отсутствуют подтверждённые вкладчики.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/payouts/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/payouts/confirm:
+    post:
+      tags:
+      - Payouts
+      operationId: confirmPayout
+      summary: Передать хеш транзакции распределения профита
+      description: Индексатор проверяет вызов контракта и событие `ProfitDistributed`. Повторная подтверждённая выплата для
+        одной кампании запрещена.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmPayoutRequest'
+      responses:
+        '202':
+          description: Транзакция выплаты принята на проверку.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Выплата недоступна из-за состояния кампании, существующей выплаты или конфликта транзакции.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                alreadyExecuted:
+                  $ref: '#/components/examples/PayoutAlreadyExecutedConflict'
+                goalNotReached:
+                  summary: Цель не достигнута
+                  value:
+                    type: https://api.parnas.example/problems/payout-not-allowed
+                    title: Выплата недоступна
+                    status: 409
+                    code: PAYOUT_NOT_ALLOWED
+                    detail: Профит можно распределить только после достижения целевой суммы.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/payouts/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+                noContributors:
+                  summary: Нет вкладчиков
+                  value:
+                    type: https://api.parnas.example/problems/no-contributors
+                    title: Некому распределять профит
+                    status: 409
+                    code: NO_CONFIRMED_CONTRIBUTORS
+                    detail: В кампании отсутствуют подтверждённые вкладчики.
+                    instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/payouts/prepare
+                    requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+                    timestamp: '2026-07-11T12:00:00Z'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/payouts/{payoutId}:
+    get:
+      tags:
+      - Payouts
+      operationId: getPayout
+      summary: Получить подробную информацию о выплате
+      description: Возвращает сумму профита, статус, транзакцию и агрегаты распределения.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/PayoutId'
+      responses:
+        '200':
+          description: Выплата найдена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/payouts/{payoutId}/distributions:
+    get:
+      tags:
+      - Payouts
+      operationId: listPayoutDistributions
+      summary: Получить распределение выплаты по вкладчикам
+      description: 'Реализует требование прозрачности UC-005 и UC-015: вклад, доля, рассчитанная сумма и статус перевода для
+        каждого кошелька.'
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/PayoutId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Распределение выплаты получено.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutDistributionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /campaigns/{campaignId}/transactions:
+    get:
+      tags:
+      - Transactions
+      operationId: listCampaignTransactions
+      summary: Получить блокчейн-транзакции кампании
+      description: Публичный журнал развёртывания, взносов, достижения цели, финализации и выплат.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/TransactionTypeQuery'
+      - $ref: '#/components/parameters/TransactionStatusQuery'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Транзакции кампании получены.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainTransactionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /transactions/{transactionHash}:
+    get:
+      tags:
+      - Transactions
+      operationId: getBlockchainTransaction
+      summary: Получить состояние блокчейн-транзакции
+      description: Возвращает нормализованное состояние транзакции, количество подтверждений, блок, ошибку исполнения и ссылку
+        на обозреватель.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/TransactionHash'
+      responses:
+        '200':
+          description: Транзакция найдена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainTransaction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /auth/register:
+    post:
+      tags:
+      - Authentication
+      operationId: registerWithWallet
+      summary: Зарегистрировать пользователя по адресу локального кошелька
+      description: Реализует UC-006 в упрощённом учебном режиме. Создаёт профиль, связывает его с указанным адресом локального
+        кошелька и выдаёт JWT. Challenge и отдельная подпись сообщения не используются. Для production такой способ авторизации
+        недостаточно безопасен.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь зарегистрирован и авторизован.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/login:
+    post:
+      tags:
+      - Authentication
+      operationId: loginWithWallet
+      summary: Войти по адресу локального кошелька
+      description: Реализует UC-007 в упрощённом учебном режиме. Backend находит зарегистрированного пользователя по адресу
+        кошелька и выдаёт JWT. Владение приватным ключом при входе отдельно не проверяется; безопасность операций со смарт-контрактом
+        обеспечивается подписью самих блокчейн-транзакций.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Авторизация успешна.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/refresh:
+    post:
+      tags:
+      - Authentication
+      operationId: refreshTokens
+      summary: Обновить пару токенов
+      description: Выполняет ротацию refresh-токена. Повторное использование уже ротированного токена блокирует всю цепочку
+        сессии.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Токены обновлены.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/logout:
+    post:
+      tags:
+      - Authentication
+      operationId: logout
+      summary: Завершить текущую сессию
+      description: Отзывает refresh-токен и связанные с ним access-токены.
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: Сессия завершена. Тело ответа отсутствует.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /users/{userId}:
+    get:
+      tags:
+      - Users
+      operationId: getPublicUserProfile
+      summary: Получить публичную страницу пользователя
+      description: Реализует UC-008. Возвращает публичные поля пользователя и созданные им кампании.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Профиль пользователя получен.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicUserProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /me:
+    get:
+      tags:
+      - Users
+      operationId: getCurrentUser
+      summary: Получить профиль текущего пользователя
+      description: Возвращает полные данные владельца сессии, включая адрес кошелька.
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Профиль получен.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /me/dashboard:
+    get:
+      tags:
+      - Users
+      operationId: getDashboard
+      summary: Получить агрегированные данные личного кабинета
+      description: 'Реализует UC-010: профиль, кампании пользователя, его вклады и финансовые агрегаты.'
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/DashboardItemsLimit'
+      responses:
+        '200':
+          description: Личный кабинет сформирован.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /me/contributions:
+    get:
+      tags:
+      - Users
+      - Contributions
+      operationId: listMyContributions
+      summary: Получить историю собственных взносов
+      description: Реализует UC-011. Возвращает пустой список, если пользователь ещё не участвовал в кампаниях.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignStatusQuery'
+      - $ref: '#/components/parameters/TransactionStatusQuery'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: История взносов получена.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyContributionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /me/campaigns:
+    get:
+      tags:
+      - Users
+      - Campaigns
+      operationId: listMyCampaigns
+      summary: Получить созданные пользователем кампании
+      description: Реализует UC-012. Возвращает пустой список, если пользователь не создавал кампаний.
+      security:
+      - bearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CampaignStatusQuery'
+      - $ref: '#/components/parameters/SortCampaigns'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список кампаний пользователя получен.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /service/campaigns/finalize-expired:
+    post:
+      tags:
+      - Service
+      operationId: finalizeExpiredCampaigns
+      summary: Запустить автоматическую финализацию просроченных кампаний
+      description: 'Реализует UC-016. Endpoint вызывается планировщиком/keeper-сервисом, а не человеком.
+
+
+        Сервис находит открытые кампании с истёкшим дедлайном, для каждой формирует и отправляет транзакцию `finalizeExpiredCampaign`.
+        Контракт переводит кампанию в `FAILED_DEADLINE`, блокирует новые взносы и запрещает выплату профита. Если цель уже
+        достигнута, кампания остаётся `CLOSED_GOAL_REACHED`.'
+      security:
+      - serviceApiKey: []
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinalizeExpiredCampaignsRequest'
+      responses:
+        '202':
+          description: Задание финализации принято.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalizeExpiredCampaignsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /service/blockchain/events:
+    post:
+      tags:
+      - Service
+      operationId: acceptBlockchainEvents
+      summary: Принять подтверждённые события блокчейна от индексатора
+      description: Идемпотентно обновляет локальную проекцию на основании подтверждённых событий смарт-контрактов. Подпись
+        webhook проверяется по `X-Webhook-Signature`.
+      security:
+      - webhookSignature: []
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockchainEventBatch'
+      responses:
+        '202':
+          description: Пакет событий принят.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainEventBatchAccepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Учебный access JWT, полученный после регистрации или входа по адресу локального кошелька.
+    serviceApiKey:
+      type: apiKey
+      in: header
+      name: X-Service-Api-Key
+      description: Секрет служебного keeper-сервиса. Не используется браузерным клиентом.
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: HMAC-SHA256 подпись точного тела запроса в формате `sha256=<hex>`.
+  headers:
+    XRequestId:
+      description: Уникальный идентификатор запроса для трассировки.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 64
+      example: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+    RetryAfter:
+      description: Число секунд до рекомендуемой повторной попытки.
+      schema:
+        type: integer
+        minimum: 1
+      example: 30
+  parameters:
+    XRequestIdOptional:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Клиентский идентификатор корреляции. Если отсутствует, сервер создаёт свой.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 64
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Уникальный ключ операции. Повтор с тем же телом возвращает прежний результат; повтор с другим телом — `409
+        IDEMPOTENCY_KEY_REUSED`.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+      example: 550e8400-e29b-41d4-a716-446655440000
+    CampaignId:
+      name: campaignId
+      in: path
+      required: true
+      description: Внутренний UUID кампании.
+      schema:
+        type: string
+        format: uuid
+    PayoutId:
+      name: payoutId
+      in: path
+      required: true
+      description: UUID выплаты.
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: UUID пользователя.
+      schema:
+        type: string
+        format: uuid
+    TransactionHash:
+      name: transactionHash
+      in: path
+      required: true
+      description: Хеш EVM-транзакции.
+      schema:
+        $ref: '#/components/schemas/TransactionHash'
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Номер страницы, начиная с 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Размер страницы.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    SearchQuery:
+      name: q
+      in: query
+      required: false
+      description: Поиск по названию и описанию. Пробелы по краям игнорируются.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    CampaignStatusQuery:
+      name: status
+      in: query
+      required: false
+      description: Фильтр по статусу кампании. Параметр можно передать несколько раз.
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/CampaignStatus'
+      style: form
+      explode: true
+    CreatorIdQuery:
+      name: creatorId
+      in: query
+      required: false
+      description: Фильтр по UUID создателя.
+      schema:
+        type: string
+        format: uuid
+    SortCampaigns:
+      name: sort
+      in: query
+      required: false
+      description: Сортировка списка кампаний.
+      schema:
+        type: string
+        enum:
+        - POPULARITY_DESC
+        - CREATED_AT_DESC
+        - DEADLINE_ASC
+        - TARGET_AMOUNT_DESC
+        - PROGRESS_DESC
+        default: CREATED_AT_DESC
+    PopularLimit:
+      name: popularLimit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 50
+        default: 6
+      description: Максимальное число популярных кампаний.
+    ActiveLimit:
+      name: activeLimit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 100
+        default: 12
+      description: Максимальное число активных кампаний.
+    DashboardItemsLimit:
+      name: itemsLimit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 20
+        default: 5
+      description: Число последних элементов каждого типа в личном кабинете.
+    IncludeRecentTransactions:
+      name: includeRecentTransactions
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: true
+      description: Добавить до 10 последних транзакций в карточку кампании.
+    TransactionTypeQuery:
+      name: type
+      in: query
+      required: false
+      description: Фильтр по типу транзакции.
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/TransactionType'
+      style: form
+      explode: true
+    TransactionStatusQuery:
+      name: transactionStatus
+      in: query
+      required: false
+      description: Фильтр по состоянию блокчейн-транзакции.
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/TransactionStatus'
+      style: form
+      explode: true
+  schemas:
+    WalletAddress:
+      type: string
+      description: EVM-адрес кошелька в checksum-формате.
+      pattern: ^0x[a-fA-F0-9]{40}$
+      example: '0x52908400098527886E0F7030069857D2E4169EE7'
+    TransactionHash:
+      type: string
+      description: Хеш EVM-транзакции.
+      pattern: ^0x[a-fA-F0-9]{64}$
+      example: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    HexData:
+      type: string
+      description: Hex-строка с префиксом 0x.
+      pattern: ^0x([a-fA-F0-9]{2})*$
+      example: '0xa9059cbb'
+    CampaignStatus:
+      type: string
+      description: 'Состояние кампании:
+
+        - `PENDING_DEPLOYMENT` — ожидается подтверждение развёртывания;
+
+        - `OPEN` — взносы разрешены;
+
+        - `CLOSED_GOAL_REACHED` — цель достигнута, новые взносы заблокированы;
+
+        - `FAILED_DEADLINE` — дедлайн истёк до достижения цели, взносы и профит недоступны.'
+      enum:
+      - PENDING_DEPLOYMENT
+      - OPEN
+      - CLOSED_GOAL_REACHED
+      - FAILED_DEADLINE
+    TransactionStatus:
+      type: string
+      enum:
+      - PREPARED
+      - SUBMITTED
+      - PENDING
+      - CONFIRMED
+      - FAILED
+      - REVERTED
+      - REORGED
+      description: Нормализованный жизненный цикл блокчейн-транзакции.
+    TransactionType:
+      type: string
+      enum:
+      - CAMPAIGN_DEPLOYMENT
+      - CONTRIBUTION
+      - GOAL_REACHED
+      - CAMPAIGN_FINALIZATION
+      - PAYOUT
+      description: Назначение транзакции или индексируемого события.
+    ContributionStatus:
+      type: string
+      enum:
+      - PREPARED
+      - PENDING
+      - CONFIRMED
+      - FAILED
+      - REVERTED
+      description: Состояние взноса.
+    PayoutStatus:
+      type: string
+      enum:
+      - PREPARED
+      - PENDING
+      - CONFIRMED
+      - FAILED
+      - REVERTED
+      description: Состояние выплаты.
+    TokenAmount:
+      type: object
+      additionalProperties: false
+      required:
+      - raw
+      - decimals
+      - symbol
+      properties:
+        raw:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+          description: Целое неотрицательное значение в минимальных единицах токена.
+          example: '100000000000000000000'
+        decimals:
+          type: integer
+          minimum: 0
+          maximum: 36
+          example: 18
+        symbol:
+          type: string
+          minLength: 1
+          maxLength: 16
+          example: VFT
+        formatted:
+          type: string
+          description: Человекочитаемое представление. Только для отображения; не использовать в вычислениях.
+          example: '100.0'
+          nullable: true
+    PaginationMeta:
+      type: object
+      additionalProperties: false
+      required:
+      - page
+      - pageSize
+      - totalItems
+      - totalPages
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        totalItems:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+    UserSummary:
+      type: object
+      required:
+      - id
+      - username
+      - walletAddress
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+          pattern: ^[a-zA-Z0-9_]{3,32}$
+          example: investor_ivan
+        firstName:
+          type: string
+          maxLength: 100
+          example: Иван
+          nullable: true
+        lastName:
+          type: string
+          maxLength: 100
+          example: Иванов
+          nullable: true
+        walletAddress:
+          $ref: '#/components/schemas/WalletAddress'
+    UserProfile:
+      allOf:
+      - $ref: '#/components/schemas/UserSummary'
+      - type: object
+        required:
+        - createdAt
+        properties:
+          createdAt:
+            type: string
+            format: date-time
+          lastLoginAt:
+            type: string
+            format: date-time
+            nullable: true
+    CampaignFinancials:
+      type: object
+      additionalProperties: false
+      required:
+      - targetAmount
+      - raisedAmount
+      - remainingAmount
+      - progressPercent
+      - contributorsCount
+      - payoutsCount
+      - totalProfitDistributed
+      properties:
+        targetAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        raisedAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        remainingAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        progressPercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          multipleOf: 0.01
+          example: 73.25
+        contributorsCount:
+          type: integer
+          minimum: 0
+          example: 42
+        payoutsCount:
+          type: integer
+          minimum: 0
+          maximum: 1
+          example: 0
+        totalProfitDistributed:
+          $ref: '#/components/schemas/TokenAmount'
+    CampaignSummary:
+      type: object
+      required:
+      - id
+      - title
+      - shortDescription
+      - status
+      - creator
+      - financials
+      - createdAt
+      - deadline
+      properties:
+        id:
+          type: string
+          format: uuid
+        contractAddress:
+          description: Адрес контракта кампании; null до развёртывания.
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/WalletAddress'
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+          example: Экологичная мастерская
+        shortDescription:
+          type: string
+          maxLength: 300
+          example: Сбор средств на запуск мастерской переработки пластика.
+        status:
+          $ref: '#/components/schemas/CampaignStatus'
+        creator:
+          $ref: '#/components/schemas/UserSummary'
+        financials:
+          $ref: '#/components/schemas/CampaignFinancials'
+        createdAt:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+    PayoutSummary:
+      type: object
+      required:
+      - id
+      - campaignId
+      - profitAmount
+      - recipientsCount
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        campaignId:
+          type: string
+          format: uuid
+        profitAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        recipientsCount:
+          type: integer
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/PayoutStatus'
+        transactionHash:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/TransactionHash'
+        createdAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+    BlockchainTransaction:
+      type: object
+      additionalProperties: false
+      required:
+      - hash
+      - network
+      - chainId
+      - type
+      - status
+      - from
+      - to
+      - confirmations
+      - createdAt
+      properties:
+        hash:
+          $ref: '#/components/schemas/TransactionHash'
+        network:
+          type: string
+          example: sepolia
+        chainId:
+          type: integer
+          minimum: 1
+          example: 11155111
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        from:
+          $ref: '#/components/schemas/WalletAddress'
+        to:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/WalletAddress'
+        value:
+          $ref: '#/components/schemas/TokenAmount'
+        blockNumber:
+          type: integer
+          minimum: 0
+          nullable: true
+        blockHash:
+          type: string
+          pattern: ^0x[a-fA-F0-9]{64}$
+          nullable: true
+        confirmations:
+          type: integer
+          minimum: 0
+        requiredConfirmations:
+          type: integer
+          minimum: 1
+          default: 12
+        gasUsed:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+          nullable: true
+        revertReason:
+          type: string
+          maxLength: 500
+          nullable: true
+        explorerUrl:
+          type: string
+          format: uri
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+    CampaignDetail:
+      allOf:
+      - $ref: '#/components/schemas/CampaignSummary'
+      - type: object
+        required:
+        - description
+        - blockchainDataFresh
+        - recentPayouts
+        - recentTransactions
+        properties:
+          description:
+            type: string
+            minLength: 10
+            maxLength: 5000
+          blockchainDataFresh:
+            type: boolean
+            description: true — данные сверены с RPC в пределах допустимого окна свежести.
+          blockchainDataAsOfBlock:
+            type: integer
+            minimum: 0
+            nullable: true
+          recentPayouts:
+            type: array
+            items:
+              $ref: '#/components/schemas/PayoutSummary'
+            maxItems: 10
+          recentTransactions:
+            type: array
+            items:
+              $ref: '#/components/schemas/BlockchainTransaction'
+            maxItems: 10
+    CampaignListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignListItem'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    HomePageResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - platformName
+      - popularCampaigns
+      - activeCampaigns
+      - generatedAt
+      properties:
+        platformName:
+          type: string
+          example: Parnas
+        popularCampaigns:
+          type: array
+          items:
+            $ref: '#/components/schemas/HomeCampaignCard'
+        activeCampaigns:
+          type: array
+          items:
+            $ref: '#/components/schemas/HomeCampaignCard'
+        generatedAt:
+          type: string
+          format: date-time
+      description: Минимальный набор данных для главной страницы. Подробности кампании и данные создателя загружаются отдельным
+        запросом.
+    CreateCampaignRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      - description
+      - targetAmountRaw
+      - deadline
+      - chainId
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          minLength: 10
+          maxLength: 5000
+        targetAmountRaw:
+          type: string
+          pattern: ^[1-9][0-9]*$
+          description: Цель в минимальных единицах токена.
+        deadline:
+          type: string
+          format: date-time
+          description: Должен быть в будущем и не превышать максимальную длительность кампании.
+        chainId:
+          type: integer
+          minimum: 1
+        metadataUri:
+          type: string
+          format: uri
+          maxLength: 2048
+          nullable: true
+      example:
+        title: Экологичная мастерская
+        description: Запуск мастерской по переработке пластика и производству полезных изделий.
+        targetAmountRaw: '1000000000000000000000'
+        deadline: '2026-12-31T20:00:00Z'
+        chainId: 11155111
+        metadataUri: ipfs://bafy...
+    EvmTransactionRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - chainId
+      - from
+      - to
+      - data
+      - valueRaw
+      properties:
+        chainId:
+          type: integer
+          minimum: 1
+        from:
+          $ref: '#/components/schemas/WalletAddress'
+        to:
+          $ref: '#/components/schemas/WalletAddress'
+        data:
+          $ref: '#/components/schemas/HexData'
+        valueRaw:
+          type: string
+          pattern: ^(0|[1-9][0-9]*)$
+          description: Нативная валюта сети в wei. Для ERC-20 обычно `0`.
+        gasLimit:
+          type: string
+          pattern: ^[1-9][0-9]*$
+          nullable: true
+        maxFeePerGas:
+          type: string
+          pattern: ^[1-9][0-9]*$
+          nullable: true
+        maxPriorityFeePerGas:
+          type: string
+          pattern: ^[1-9][0-9]*$
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          description: После этого времени данные требуется подготовить заново.
+    CampaignCreationResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - campaign
+      - transactionRequest
+      properties:
+        campaign:
+          $ref: '#/components/schemas/CampaignDetail'
+        transactionRequest:
+          $ref: '#/components/schemas/EvmTransactionRequest'
+    TransactionConfirmationRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - transactionHash
+      properties:
+        transactionHash:
+          $ref: '#/components/schemas/TransactionHash'
+    TransactionAcceptedResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - transactionHash
+      - status
+      - statusUrl
+      properties:
+        transactionHash:
+          $ref: '#/components/schemas/TransactionHash'
+        status:
+          enum:
+          - PENDING
+        statusUrl:
+          type: string
+          format: uri-reference
+    CampaignActionAvailability:
+      type: object
+      additionalProperties: false
+      required:
+      - canContribute
+      - canPreparePayout
+      - canViewManagement
+      properties:
+        canContribute:
+          type: boolean
+        contributeBlockedReason:
+          type: string
+          nullable: true
+        canPreparePayout:
+          type: boolean
+        payoutBlockedReason:
+          type: string
+          nullable: true
+        canViewManagement:
+          type: boolean
+    CampaignManagementView:
+      type: object
+      additionalProperties: false
+      required:
+      - campaign
+      - actions
+      - recentContributions
+      - payouts
+      properties:
+        campaign:
+          $ref: '#/components/schemas/CampaignDetail'
+        actions:
+          $ref: '#/components/schemas/CampaignActionAvailability'
+        recentContributions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contribution'
+        payouts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayoutSummary'
+          maxItems: 1
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - walletAddress
+      - username
+      - firstName
+      - lastName
+      properties:
+        walletAddress:
+          $ref: '#/components/schemas/WalletAddress'
+        username:
+          type: string
+          pattern: ^[a-zA-Z0-9_]{3,32}$
+          description: Уникальное имя пользователя.
+          example: student_investor
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Иван
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Иванов
+      example:
+        walletAddress: '0x1111111111111111111111111111111111111111'
+        username: student_investor
+        firstName: Иван
+        lastName: Иванов
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - walletAddress
+      properties:
+        walletAddress:
+          $ref: '#/components/schemas/WalletAddress'
+      example:
+        walletAddress: '0x1111111111111111111111111111111111111111'
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required:
+      - accessToken
+      - refreshToken
+      - tokenType
+      - expiresIn
+      properties:
+        accessToken:
+          type: string
+          minLength: 20
+        refreshToken:
+          type: string
+          minLength: 20
+        tokenType:
+          type: string
+          enum:
+          - Bearer
+        expiresIn:
+          type: integer
+          minimum: 60
+          example: 900
+    AuthResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      - tokens
+      properties:
+        user:
+          $ref: '#/components/schemas/UserProfile'
+        tokens:
+          $ref: '#/components/schemas/TokenPair'
+    RefreshTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - refreshToken
+      properties:
+        refreshToken:
+          type: string
+          minLength: 20
+    LogoutRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        refreshToken:
+          type: string
+          minLength: 20
+          nullable: true
+        allSessions:
+          type: boolean
+          default: false
+    PublicUserProfile:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      - createdCampaigns
+      - pagination
+      properties:
+        user:
+          $ref: '#/components/schemas/UserSummary'
+        createdCampaigns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignSummary'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    Contribution:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - campaignId
+      - contributorWallet
+      - amount
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        campaignId:
+          type: string
+          format: uuid
+        contributorUserId:
+          type: string
+          format: uuid
+          nullable: true
+        contributorWallet:
+          $ref: '#/components/schemas/WalletAddress'
+        amount:
+          $ref: '#/components/schemas/TokenAmount'
+        status:
+          $ref: '#/components/schemas/ContributionStatus'
+        transactionHash:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/TransactionHash'
+        createdAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+    PrepareContributionRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - amountRaw
+      - chainId
+      properties:
+        amountRaw:
+          type: string
+          pattern: ^[1-9][0-9]*$
+        chainId:
+          type: integer
+          minimum: 1
+    PreparedContributionResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - contribution
+      - transactionRequest
+      - remainingGoalBeforeContribution
+      properties:
+        contribution:
+          $ref: '#/components/schemas/Contribution'
+        transactionRequest:
+          $ref: '#/components/schemas/EvmTransactionRequest'
+        remainingGoalBeforeContribution:
+          $ref: '#/components/schemas/TokenAmount'
+    ConfirmContributionRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - contributionId
+      - transactionHash
+      properties:
+        contributionId:
+          type: string
+          format: uuid
+        transactionHash:
+          $ref: '#/components/schemas/TransactionHash'
+    ContributionAcceptedResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - contribution
+      - statusUrl
+      properties:
+        contribution:
+          $ref: '#/components/schemas/Contribution'
+        statusUrl:
+          type: string
+          format: uri-reference
+    ContributionListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contribution'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    Contributor:
+      type: object
+      additionalProperties: false
+      required:
+      - walletAddress
+      - totalContribution
+      - sharePercent
+      - contributionsCount
+      properties:
+        walletAddress:
+          $ref: '#/components/schemas/WalletAddress'
+        totalContribution:
+          $ref: '#/components/schemas/TokenAmount'
+        sharePercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          multipleOf: 1.0e-06
+        contributionsCount:
+          type: integer
+          minimum: 1
+    ContributorListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contributor'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    MyContributionItem:
+      type: object
+      additionalProperties: false
+      required:
+      - contribution
+      - campaign
+      properties:
+        contribution:
+          $ref: '#/components/schemas/Contribution'
+        campaign:
+          $ref: '#/components/schemas/CampaignSummary'
+    MyContributionListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MyContributionItem'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    DashboardResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      - createdCampaigns
+      - contributions
+      - aggregates
+      properties:
+        user:
+          $ref: '#/components/schemas/UserProfile'
+        createdCampaigns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignSummary'
+        contributions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MyContributionItem'
+        aggregates:
+          type: object
+          additionalProperties: false
+          required:
+          - createdCampaignsCount
+          - supportedCampaignsCount
+          - totalContributed
+          - totalDividendsReceived
+          properties:
+            createdCampaignsCount:
+              type: integer
+              minimum: 0
+            supportedCampaignsCount:
+              type: integer
+              minimum: 0
+            totalContributed:
+              $ref: '#/components/schemas/TokenAmount'
+            totalDividendsReceived:
+              $ref: '#/components/schemas/TokenAmount'
+    PreparePayoutRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - profitAmountRaw
+      - chainId
+      properties:
+        profitAmountRaw:
+          type: string
+          pattern: ^[1-9][0-9]*$
+        chainId:
+          type: integer
+          minimum: 1
+    PayoutDistributionPreview:
+      type: object
+      additionalProperties: false
+      required:
+      - recipientsCount
+      - roundingPolicy
+      - distributedAmount
+      - itemsPreview
+      properties:
+        recipientsCount:
+          type: integer
+          minimum: 1
+        roundingPolicy:
+          type: string
+          enum:
+          - FLOOR_REMAINDER_TO_LARGEST_CONTRIBUTOR
+        distributedAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        itemsPreview:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - walletAddress
+            - amount
+            - sharePercent
+            properties:
+              walletAddress:
+                $ref: '#/components/schemas/WalletAddress'
+              amount:
+                $ref: '#/components/schemas/TokenAmount'
+              sharePercent:
+                type: number
+                minimum: 0
+                maximum: 100
+    PreparedPayoutResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - payout
+      - distributionPreview
+      - transactionRequest
+      properties:
+        payout:
+          $ref: '#/components/schemas/PayoutSummary'
+        distributionPreview:
+          $ref: '#/components/schemas/PayoutDistributionPreview'
+        transactionRequest:
+          $ref: '#/components/schemas/EvmTransactionRequest'
+    ConfirmPayoutRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - payoutId
+      - transactionHash
+      properties:
+        payoutId:
+          type: string
+          format: uuid
+        transactionHash:
+          $ref: '#/components/schemas/TransactionHash'
+    PayoutAcceptedResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - payout
+      - statusUrl
+      properties:
+        payout:
+          $ref: '#/components/schemas/PayoutSummary'
+        statusUrl:
+          type: string
+          format: uri-reference
+    PayoutDetail:
+      allOf:
+      - $ref: '#/components/schemas/PayoutSummary'
+      - type: object
+        required:
+        - campaign
+        - distributedAmount
+        - roundingRemainder
+        - transaction
+        properties:
+          campaign:
+            $ref: '#/components/schemas/CampaignSummary'
+          distributedAmount:
+            $ref: '#/components/schemas/TokenAmount'
+          roundingRemainder:
+            $ref: '#/components/schemas/TokenAmount'
+          transaction:
+            nullable: true
+            allOf:
+            - $ref: '#/components/schemas/BlockchainTransaction'
+    PayoutListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayoutSummary'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    PayoutDistribution:
+      type: object
+      additionalProperties: false
+      required:
+      - payoutId
+      - walletAddress
+      - contributionAmount
+      - sharePercent
+      - payoutAmount
+      - transferStatus
+      properties:
+        payoutId:
+          type: string
+          format: uuid
+        walletAddress:
+          $ref: '#/components/schemas/WalletAddress'
+        contributionAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        sharePercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          multipleOf: 1.0e-06
+        payoutAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        transferStatus:
+          type: string
+          enum:
+          - PENDING
+          - CONFIRMED
+          - FAILED
+        transactionHash:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/TransactionHash'
+    PayoutDistributionListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayoutDistribution'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    BlockchainTransactionListResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockchainTransaction'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    FinalizeExpiredCampaignsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        batchSize:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+        dryRun:
+          type: boolean
+          default: false
+    FinalizeExpiredCampaignsResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - jobId
+      - status
+      - candidatesCount
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - QUEUED
+          - RUNNING
+        candidatesCount:
+          type: integer
+          minimum: 0
+    BlockchainEventType:
+      type: string
+      enum:
+      - CAMPAIGN_CREATED
+      - CONTRIBUTION_RECEIVED
+      - GOAL_REACHED
+      - CAMPAIGN_FINALIZED_FAILED
+      - PROFIT_DISTRIBUTED
+    BlockchainEvent:
+      type: object
+      additionalProperties: false
+      required:
+      - eventId
+      - type
+      - chainId
+      - contractAddress
+      - transactionHash
+      - blockNumber
+      - blockHash
+      - logIndex
+      - payload
+      properties:
+        eventId:
+          type: string
+          description: Детерминированный ключ `chainId:blockHash:transactionHash:logIndex`.
+        type:
+          $ref: '#/components/schemas/BlockchainEventType'
+        chainId:
+          type: integer
+          minimum: 1
+        contractAddress:
+          $ref: '#/components/schemas/WalletAddress'
+        transactionHash:
+          $ref: '#/components/schemas/TransactionHash'
+        blockNumber:
+          type: integer
+          minimum: 0
+        blockHash:
+          type: string
+          pattern: ^0x[a-fA-F0-9]{64}$
+        logIndex:
+          type: integer
+          minimum: 0
+        payload:
+          type: object
+          additionalProperties: true
+    BlockchainEventBatch:
+      type: object
+      additionalProperties: false
+      required:
+      - events
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/BlockchainEvent'
+    BlockchainEventBatchAccepted:
+      type: object
+      additionalProperties: false
+      required:
+      - accepted
+      - duplicates
+      - rejected
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        duplicates:
+          type: integer
+          minimum: 0
+        rejected:
+          type: integer
+          minimum: 0
+    FieldViolation:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - message
+      properties:
+        field:
+          type: string
+          example: targetAmountRaw
+        message:
+          type: string
+          example: Значение должно быть положительным целым числом.
+        rejectedValue: {}
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - title
+      - status
+      - code
+      - detail
+      - instance
+      - requestId
+      - timestamp
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          type: string
+          pattern: ^[A-Z][A-Z0-9_]*$
+          description: 'Машинный код. Основные доменные значения:
+
+            `WALLET_NOT_REGISTERED`, `WALLET_ALREADY_REGISTERED`, `USERNAME_TAKEN`, `CAMPAIGN_NOT_FOUND`, `CAMPAIGN_NOT_OPEN`,
+            `CAMPAIGN_NOT_DEPLOYED`, `DEADLINE_EXPIRED`, `GOAL_ALREADY_REACHED`, `CONTRIBUTION_EXCEEDS_REMAINING_AMOUNT`,
+            `INSUFFICIENT_TOKEN_BALANCE`, `INSUFFICIENT_TOKEN_ALLOWANCE`, `TRANSACTION_NOT_FOUND`, `TRANSACTION_SENDER_MISMATCH`,
+            `TRANSACTION_CONTRACT_MISMATCH`, `TRANSACTION_REVERTED`, `NOT_CAMPAIGN_CREATOR`, `PAYOUT_NOT_ALLOWED`, `PAYOUT_ALREADY_EXECUTED`,
+            `NO_CONFIRMED_CONTRIBUTORS`, `IDEMPOTENCY_KEY_REUSED`, `BLOCKCHAIN_UNAVAILABLE`.'
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldViolation'
+        retryable:
+          type: boolean
+          default: false
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+    HomeCampaignCard:
+      type: object
+      additionalProperties: false
+      description: Компактная карточка кампании для главной страницы. Не содержит адрес контракта, кошелёк и персональные
+        данные создателя.
+      required:
+      - id
+      - title
+      - shortDescription
+      - status
+      - targetAmount
+      - raisedAmount
+      - progressPercent
+      - deadline
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+          example: Экологичная мастерская
+        shortDescription:
+          type: string
+          maxLength: 180
+          example: Сбор средств на запуск мастерской переработки пластика.
+        status:
+          $ref: '#/components/schemas/CampaignStatus'
+        targetAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        raisedAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        progressPercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          multipleOf: 0.01
+          example: 73.25
+        deadline:
+          type: string
+          format: date-time
+    CampaignListItem:
+      type: object
+      additionalProperties: false
+      description: Элемент списка или результата поиска кампаний. Полные данные создателя и блокчейна возвращаются только
+        в `GET /campaigns/{campaignId}`.
+      required:
+      - id
+      - title
+      - shortDescription
+      - status
+      - targetAmount
+      - raisedAmount
+      - progressPercent
+      - createdAt
+      - deadline
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        shortDescription:
+          type: string
+          maxLength: 300
+        status:
+          $ref: '#/components/schemas/CampaignStatus'
+        targetAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        raisedAmount:
+          $ref: '#/components/schemas/TokenAmount'
+        progressPercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          multipleOf: 0.01
+        createdAt:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+  responses:
+    BadRequest:
+      description: Запрос синтаксически некорректен, содержит несовместимые параметры или повреждённый JSON.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/bad-request
+            title: Некорректный запрос
+            status: 400
+            code: BAD_REQUEST
+            detail: Проверьте формат запроса и параметры.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    Unauthorized:
+      description: Требуется авторизация или предоставленная подпись/токен недействительны.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/unauthorized
+            title: Ошибка аутентификации
+            status: 401
+            code: UNAUTHORIZED
+            detail: Не удалось подтвердить личность пользователя.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    Forbidden:
+      description: Пользователь аутентифицирован, но не имеет права выполнять операцию.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/forbidden
+            title: Доступ запрещён
+            status: 403
+            code: FORBIDDEN
+            detail: Недостаточно прав для выполнения операции.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    NotFound:
+      description: Запрошенный пользователь, кампания, выплата или транзакция не найдены.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/resource-not-found
+            title: Ресурс не найден
+            status: 404
+            code: RESOURCE_NOT_FOUND
+            detail: Запрошенный ресурс отсутствует или недоступен.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    Conflict:
+      description: Операция конфликтует с текущим состоянием ресурса или уже была выполнена.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/state-conflict
+            title: Конфликт состояния
+            status: 409
+            code: STATE_CONFLICT
+            detail: Текущее состояние ресурса не допускает операцию.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    Gone:
+      description: Одноразовый challenge истёк или уже использован.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/challenge-expired
+            title: Challenge недействителен
+            status: 410
+            code: CHALLENGE_EXPIRED
+            detail: Создайте новый challenge и подпишите его.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    PreconditionFailed:
+      description: Не выполнено условие `If-Match` либо состояние изменилось после подготовки операции.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/precondition-failed
+            title: Предусловие не выполнено
+            status: 412
+            code: PRECONDITION_FAILED
+            detail: Обновите состояние ресурса и повторите операцию.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    PayloadTooLarge:
+      description: Размер тела запроса превышает установленный предел.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/payload-too-large
+            title: Слишком большой запрос
+            status: 413
+            code: PAYLOAD_TOO_LARGE
+            detail: Уменьшите размер передаваемых данных.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    UnsupportedMediaType:
+      description: Content-Type не поддерживается. Для JSON-запросов используйте `application/json`.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/unsupported-media-type
+            title: Неподдерживаемый формат
+            status: 415
+            code: UNSUPPORTED_MEDIA_TYPE
+            detail: Передайте тело в поддерживаемом формате.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    UnprocessableEntity:
+      description: JSON корректен, но поля не прошли валидацию.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/validation-error
+            title: Ошибка валидации
+            status: 422
+            code: VALIDATION_ERROR
+            detail: Одно или несколько полей содержат недопустимые значения.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    TooManyRequests:
+      description: Превышен лимит запросов.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/rate-limit-exceeded
+            title: Слишком много запросов
+            status: 429
+            code: RATE_LIMIT_EXCEEDED
+            detail: Повторите запрос после указанного интервала.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    InternalServerError:
+      description: Непредвиденная внутренняя ошибка API.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/internal-error
+            title: Внутренняя ошибка
+            status: 500
+            code: INTERNAL_ERROR
+            detail: Сервер не смог завершить операцию.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    BadGateway:
+      description: Некорректный ответ RPC-узла, индексатора или другого внешнего сервиса.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/upstream-bad-response
+            title: Ошибка внешнего сервиса
+            status: 502
+            code: UPSTREAM_BAD_RESPONSE
+            detail: Получен некорректный ответ от зависимого сервиса.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    ServiceUnavailable:
+      description: API или критическая зависимость временно недоступны.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/service-unavailable
+            title: Сервис временно недоступен
+            status: 503
+            code: SERVICE_UNAVAILABLE
+            detail: Повторите запрос позднее.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+    GatewayTimeout:
+      description: Истёк таймаут обращения к RPC-узлу или индексатору.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://api.parnas.example/problems/upstream-timeout
+            title: Таймаут внешнего сервиса
+            status: 504
+            code: UPSTREAM_TIMEOUT
+            detail: Внешний сервис не ответил вовремя.
+            instance: /api/v1/example
+            requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+            timestamp: '2026-07-11T12:00:00Z'
+  examples:
+    CampaignGoalReachedConflict:
+      summary: Цель уже достигнута
+      value:
+        type: https://api.parnas.example/problems/goal-already-reached
+        title: Взнос недоступен
+        status: 409
+        code: GOAL_ALREADY_REACHED
+        detail: Кампания уже достигла целевой суммы; новые взносы заблокированы.
+        instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/contributions/prepare
+        requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+        timestamp: '2026-07-11T12:00:00Z'
+    PayoutAlreadyExecutedConflict:
+      summary: Выплата уже выполнена
+      value:
+        type: https://api.parnas.example/problems/payout-already-executed
+        title: Повторная выплата запрещена
+        status: 409
+        code: PAYOUT_ALREADY_EXECUTED
+        detail: Для кампании уже существует подтверждённая выплата профита.
+        instance: /api/v1/campaigns/550e8400-e29b-41d4-a716-446655440000/payouts/prepare
+        requestId: 01J2QF6S2EJ6F4B1M8XKJ0N9A7
+        timestamp: '2026-07-11T12:00:00Z'
