@@ -84,20 +84,34 @@ public class BlockchainService {
     }
 
     public TransactionReceipt requireSuccessfulReceipt(String transactionHash) {
+        log.info("Reading blockchain receipt: txHash={}", transactionHash);
         TransactionReceipt receipt = getReceipt(transactionHash);
         if (!receipt.isStatusOK()) {
             log.warn("Blockchain transaction reverted: txHash={} status={}", transactionHash, receipt.getStatus());
             throw new ConflictException("BLOCKCHAIN_TRANSACTION_FAILED", "Blockchain transaction was reverted.");
         }
-        log.info("Blockchain receipt confirmed: txHash={} blockNumber={} gasUsed={}",
-            receipt.getTransactionHash(), receipt.getBlockNumber(), receipt.getGasUsed());
+        log.info("Blockchain receipt confirmed: txHash={} blockNumber={} blockHash={} gasUsed={} contractAddress={} status={}",
+            receipt.getTransactionHash(),
+            receipt.getBlockNumber(),
+            receipt.getBlockHash(),
+            receipt.getGasUsed(),
+            receipt.getContractAddress(),
+            receipt.getStatus());
         return receipt;
     }
 
     public Transaction requireTransaction(String transactionHash) {
         try {
-            return web3j.ethGetTransactionByHash(transactionHash).send().getTransaction()
+            Transaction transaction = web3j.ethGetTransactionByHash(transactionHash).send().getTransaction()
                 .orElseThrow(() -> new ConflictException("TRANSACTION_NOT_FOUND", "Blockchain transaction was not found."));
+            log.info("Blockchain transaction loaded: txHash={} from={} to={} value={} nonce={} blockNumber={}",
+                transaction.getHash(),
+                transaction.getFrom(),
+                transaction.getTo(),
+                transaction.getValue(),
+                transaction.getNonce(),
+                transaction.getBlockNumber());
+            return transaction;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read blockchain transaction.", e);
         }
@@ -149,6 +163,15 @@ public class BlockchainService {
 
     public BlockchainTransaction toBlockchainTransaction(Transaction transaction, TransactionReceipt receipt,
                                                          TransactionType type, String valueRaw) {
+        int confirmationCount = confirmations(receipt.getBlockNumber());
+        log.info("Persisting blockchain transaction: type={} txHash={} from={} to={} value={} blockNumber={} confirmations={}",
+            type,
+            receipt.getTransactionHash(),
+            transaction.getFrom(),
+            transaction.getTo(),
+            valueRaw != null ? valueRaw : transaction.getValue(),
+            receipt.getBlockNumber(),
+            confirmationCount);
         BlockchainTransaction tx = new BlockchainTransaction();
         tx.setHash(receipt.getTransactionHash());
         tx.setNetwork(properties.getNetwork());
@@ -160,7 +183,7 @@ public class BlockchainService {
         tx.setValue(valueRaw != null ? valueRaw : transaction.getValue().toString());
         tx.setBlockNumber(receipt.getBlockNumber().longValue());
         tx.setBlockHash(receipt.getBlockHash());
-        tx.setConfirmations(confirmations(receipt.getBlockNumber()));
+        tx.setConfirmations(confirmationCount);
         tx.setRequiredConfirmations(properties.getRequiredConfirmations());
         tx.setGasUsed(receipt.getGasUsed() != null ? receipt.getGasUsed().toString() : null);
         tx.setCreatedAt(Instant.now());
@@ -204,6 +227,12 @@ public class BlockchainService {
                     credentials.getAddress(), DefaultBlockParameterName.PENDING)
                 .send().getTransactionCount();
             BigInteger gasPrice = web3j.ethGasPrice().send().getGasPrice();
+            log.info("Signing CampaignFactory deployment: signer={} nonce={} gasPrice={} gasLimit={} chainId={}",
+                credentials.getAddress(),
+                nonce,
+                gasPrice,
+                properties.getGasLimit(),
+                properties.getChainId());
             RawTransaction raw = RawTransaction.createContractTransaction(
                 nonce,
                 gasPrice != null ? gasPrice : DefaultGasProvider.GAS_PRICE,
