@@ -1,0 +1,7 @@
+.git/
+.gitattributes
+.gitignore
+.gradle/
+.idea/
+build/
+*.md
