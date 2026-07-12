@@ -68,9 +68,8 @@ public class PayoutService {
         Campaign campaign = campaignRepository.findById(campaignId)
             .orElseThrow(() -> new ResourceNotFoundException("Кампания не найдена"));
         requirePayoutAllowed(campaign, currentUser);
-        if (campaign.getChainId() != request.getChainId()) {
-            throw new IllegalArgumentException("Chain id does not match campaign chain id.");
-        }
+        blockchainService.requireSupportedChainId(request.getChainId());
+        requireCampaignChainId(campaign, request.getChainId());
         if (payoutRepository.existsByCampaignIdAndStatus(campaignId, PayoutStatus.CONFIRMED)) {
             throw new ConflictException("PAYOUT_ALREADY_EXECUTED", "Confirmed payout already exists.");
         }
@@ -235,6 +234,12 @@ public class PayoutService {
         }
         if (campaign.getStatus() != CampaignStatus.CLOSED_GOAL_REACHED || campaign.getContractAddress() == null) {
             throw new ConflictException("PAYOUT_NOT_ALLOWED", "Payout is available only after campaign goal is reached.");
+        }
+    }
+
+    private static void requireCampaignChainId(Campaign campaign, long chainId) {
+        if (campaign.getChainId() != chainId) {
+            throw new IllegalArgumentException("Chain id does not match campaign chain id.");
         }
     }
 

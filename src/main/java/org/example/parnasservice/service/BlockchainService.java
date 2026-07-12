@@ -43,6 +43,14 @@ public class BlockchainService {
 
     private String deployedFactoryAddress;
 
+    public void requireSupportedChainId(long chainId) {
+        if (chainId != properties.getChainId()) {
+            throw new IllegalArgumentException(
+                "Unsupported chain id " + chainId + ". Expected local chain id " + properties.getChainId() + "."
+            );
+        }
+    }
+
     public EvmTransactionRequest createCampaignTransaction(String from, String title, String description,
                                                            String targetAmountRaw, Instant deadline) {
         String factoryAddress = ensureFactoryAddress();
@@ -191,7 +199,7 @@ public class BlockchainService {
 
     private String deployFactory() {
         try {
-            Credentials credentials = Credentials.create(strip0x(properties.getDeployerPrivateKey()));
+            Credentials credentials = Credentials.create(normalizePrivateKey(properties.getDeployerPrivateKey()));
             BigInteger nonce = web3j.ethGetTransactionCount(
                     credentials.getAddress(), DefaultBlockParameterName.PENDING)
                 .send().getTransactionCount();
@@ -267,7 +275,11 @@ public class BlockchainService {
         return value != null && !value.isBlank();
     }
 
-    private static String strip0x(String value) {
-        return value != null && value.startsWith("0x") ? value.substring(2) : value;
+    private static String normalizePrivateKey(String value) {
+        String normalized = Numeric.cleanHexPrefix(value == null ? "" : value.trim());
+        if (!normalized.matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalStateException("Blockchain deployer private key must contain exactly 64 hex characters.");
+        }
+        return normalized;
     }
 }

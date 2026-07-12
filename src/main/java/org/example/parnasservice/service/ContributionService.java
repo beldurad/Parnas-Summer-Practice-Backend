@@ -49,9 +49,8 @@ public class ContributionService {
             .orElseThrow(() -> new ResourceNotFoundException("Кампания не найдена"));
 
         requireOpenCampaign(campaign);
-        if (campaign.getChainId() != request.getChainId()) {
-            throw new IllegalArgumentException("Chain id does not match campaign chain id.");
-        }
+        blockchainService.requireSupportedChainId(request.getChainId());
+        requireCampaignChainId(campaign, request.getChainId());
 
         BigInteger raised = new BigInteger(campaign.getRaisedAmount());
         BigInteger target = new BigInteger(campaign.getTargetAmount());
@@ -164,6 +163,12 @@ public class ContributionService {
         }
         if (campaign.getDeadline().isBefore(Instant.now())) {
             throw new ConflictException("CAMPAIGN_DEADLINE_EXPIRED", "Campaign deadline has expired.");
+        }
+    }
+
+    private static void requireCampaignChainId(Campaign campaign, long chainId) {
+        if (campaign.getChainId() != chainId) {
+            throw new IllegalArgumentException("Chain id does not match campaign chain id.");
         }
     }
 

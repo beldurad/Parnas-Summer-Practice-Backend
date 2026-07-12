@@ -1,13 +1,5 @@
-FROM eclipse-temurin:17-jdk-alpine AS builder
-WORKDIR /app
-COPY gradlew build.gradle.kts settings.gradle.kts ./
-COPY gradle gradle
-RUN chmod +x gradlew
-COPY src src
-RUN ./gradlew bootJar --no-daemon -Dorg.gradle.java.home=$JAVA_HOME
-
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY --from=builder /app/build/libs/*.jar app.jar
+COPY build/libs/*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

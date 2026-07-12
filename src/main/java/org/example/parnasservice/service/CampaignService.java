@@ -86,6 +86,7 @@ public class CampaignService {
         if (request.getDeadline().isBefore(Instant.now())) {
             throw new IllegalArgumentException("Дедлайн должен быть в будущем.");
         }
+        blockchainService.requireSupportedChainId(request.getChainId());
 
         Campaign campaign = new Campaign();
         campaign.setId(UUID.randomUUID());

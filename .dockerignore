@@ -3,5 +3,7 @@
 .gitignore
 .gradle/
 .idea/
-build/
+build/*
+!build/libs/
+!build/libs/*.jar
 *.md
