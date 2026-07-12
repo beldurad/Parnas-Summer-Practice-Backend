@@ -1,0 +1,4 @@
+databaseChangeLog:
+  - include:
+      file: classpath:liquibase/scripts/001-initial-schema.sql
+      relativeToChangelogFile: false

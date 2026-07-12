@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: parnas-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/parnas
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  liquibase:
+    change-log: classpath:liquibase/changelog-master.yaml
+    enabled: true
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api/v1
+
+parnas:
+  jwt:
+    access-token-expiration: 900
+    refresh-token-expiration: 604800
+    secret: p3K8xJ2mN5qR7vT9wY1bC4dF6gH0jL3nP6sU8vW2xZ5aB7cE9fI1kM4oR7tY0u
+  platform:
+    name: Parnas
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
