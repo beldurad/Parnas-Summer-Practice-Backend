@@ -1,12 +1,12 @@
-FROM gradle:8.10-jdk21-alpine AS builder
+FROM eclipse-temurin:17-jdk-alpine AS builder
 WORKDIR /app
-COPY build.gradle.kts settings.gradle.kts ./
+COPY gradlew build.gradle.kts settings.gradle.kts ./
 COPY gradle gradle
-RUN gradle dependencies --no-daemon
+RUN chmod +x gradlew
 COPY src src
-RUN gradle bootJar --no-daemon
+RUN ./gradlew bootJar --no-daemon -Dorg.gradle.java.home=$JAVA_HOME
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
 EXPOSE 8080

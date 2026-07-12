@@ -30,12 +30,10 @@ public interface CampaignRepository extends JpaRepository<Campaign, UUID> {
                                     @Param("creatorId") UUID creatorId,
                                     Pageable pageable);
 
-    @Query("SELECT c FROM Campaign c WHERE c.status = 'OPEN' AND c.deadline < :now")
-    List<Campaign> findExpiredOpenCampaigns(@Param("now") Instant now);
+    List<Campaign> findByStatusAndDeadlineBefore(CampaignStatus status, Instant now);
 
     List<Campaign> findTop6ByStatusOrderByCreatedAtDesc(CampaignStatus status);
 
-    @Query("SELECT c FROM Campaign c WHERE c.status = 'OPEN' ORDER BY c.raisedAmount DESC")
     List<Campaign> findTop6ByStatusOrderByRaisedAmountDesc(CampaignStatus status);
 
 }

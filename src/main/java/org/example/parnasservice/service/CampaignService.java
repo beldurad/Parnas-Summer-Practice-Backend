@@ -6,9 +6,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 import org.example.parnasservice.dto.request.CreateCampaignRequest;
+import org.example.parnasservice.dto.request.TransactionConfirmationRequest;
 import org.example.parnasservice.dto.response.BlockchainTransactionResponse;
 import org.example.parnasservice.dto.response.CampaignActionAvailability;
+import org.example.parnasservice.dto.response.CampaignCreationResponse;
 import org.example.parnasservice.dto.response.CampaignDetail;
 import org.example.parnasservice.dto.response.CampaignListResponse;
 import org.example.parnasservice.dto.response.CampaignListItem;
@@ -26,9 +29,12 @@ import org.example.parnasservice.entity.User;
 import org.example.parnasservice.entity.enums.CampaignStatus;
 import org.example.parnasservice.entity.enums.ContributionStatus;
 import org.example.parnasservice.entity.enums.PayoutStatus;
+import org.example.parnasservice.entity.enums.TransactionType;
+import org.example.parnasservice.exception.ConflictException;
 import org.example.parnasservice.exception.ForbiddenException;
 import org.example.parnasservice.exception.ResourceNotFoundException;
 import org.example.parnasservice.mapper.EntityMapper;
+import org.example.parnasservice.repository.BlockchainTransactionRepository;
 import org.example.parnasservice.repository.CampaignRepository;
 import org.example.parnasservice.repository.ContributionRepository;
 import org.example.parnasservice.repository.PayoutDistributionRepository;
@@ -43,13 +49,16 @@ import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CampaignService {
 
     private final CampaignRepository campaignRepository;
     private final ContributionRepository contributionRepository;
     private final PayoutRepository payoutRepository;
     private final PayoutDistributionRepository payoutDistributionRepository;
+    private final BlockchainTransactionRepository blockchainTransactionRepository;
     private final EntityMapper entityMapper;
+    private final BlockchainService blockchainService;
 
     @Transactional(readOnly = true)
     public CampaignListResponse listCampaigns(String query, List<CampaignStatus> statuses,
@@ -72,7 +81,8 @@ public class CampaignService {
     }
 
     @Transactional
-    public Campaign createCampaign(CreateCampaignRequest request, User creator) {
+    public CampaignCreationResponse createCampaign(CreateCampaignRequest request, User creator) {
+        requireAuthenticated(creator);
         if (request.getDeadline().isBefore(Instant.now())) {
             throw new IllegalArgumentException("Дедлайн должен быть в будущем.");
         }
@@ -86,11 +96,65 @@ public class CampaignService {
         campaign.setCreator(creator);
         campaign.setTargetAmount(request.getTargetAmountRaw());
         campaign.setRaisedAmount("0");
-        campaign.setStatus(CampaignStatus.OPEN);
+        campaign.setStatus(CampaignStatus.PENDING_DEPLOYMENT);
         campaign.setDeadline(request.getDeadline());
         campaign.setChainId(request.getChainId());
         campaign.setCreatedAt(Instant.now());
-        return campaignRepository.save(campaign);
+        campaign = campaignRepository.save(campaign);
+        log.info("Campaign created locally: campaignId={} creatorId={} chainId={} target={} status={}",
+            campaign.getId(), creator.getId(), campaign.getChainId(), campaign.getTargetAmount(), campaign.getStatus());
+
+        var transactionRequest = blockchainService.createCampaignTransaction(
+            creator.getWalletAddress(),
+            campaign.getTitle(),
+            campaign.getDescription(),
+            campaign.getTargetAmount(),
+            campaign.getDeadline()
+        );
+
+        return new CampaignCreationResponse(
+            getCampaign(campaign.getId(), false),
+            transactionRequest
+        );
+    }
+
+    @Transactional
+    public org.example.parnasservice.dto.response.TransactionAcceptedResponse confirmDeployment(
+            UUID campaignId,
+            TransactionConfirmationRequest request,
+            User currentUser) {
+        requireAuthenticated(currentUser);
+        log.info("Campaign deployment confirmation requested: campaignId={} userId={} txHash={}",
+            campaignId, currentUser.getId(), request.getTransactionHash());
+        Campaign campaign = campaignRepository.findById(campaignId)
+            .orElseThrow(() -> new ResourceNotFoundException("Кампания не найдена"));
+
+        if (!campaign.getCreator().getId().equals(currentUser.getId())) {
+            throw new ForbiddenException("Только создатель может подтвердить развёртывание.");
+        }
+        if (campaign.getStatus() != CampaignStatus.PENDING_DEPLOYMENT) {
+            throw new ConflictException("CAMPAIGN_ALREADY_DEPLOYED",
+                "Campaign deployment has already been confirmed.");
+        }
+
+        var receipt = blockchainService.requireSuccessfulReceipt(request.getTransactionHash());
+        var tx = blockchainService.requireTransaction(request.getTransactionHash());
+        String contractAddress = blockchainService.requireCampaignCreated(receipt, currentUser.getWalletAddress());
+
+        campaign.setContractAddress(contractAddress);
+        campaign.setStatus(CampaignStatus.OPEN);
+        campaignRepository.save(campaign);
+        log.info("Campaign deployment confirmed: campaignId={} contractAddress={} txHash={}",
+            campaignId, contractAddress, request.getTransactionHash());
+
+        blockchainTransactionRepository.save(blockchainService.toBlockchainTransaction(
+            tx, receipt, TransactionType.CAMPAIGN_DEPLOYMENT, "0"));
+
+        return new org.example.parnasservice.dto.response.TransactionAcceptedResponse(
+            request.getTransactionHash(),
+            "PENDING",
+            "/api/v1/campaigns/" + campaignId
+        );
     }
 
     @Transactional(readOnly = true)
@@ -112,6 +176,14 @@ public class CampaignService {
             .collect(Collectors.toList());
 
         List<BlockchainTransactionResponse> transactions = Collections.emptyList();
+        if (includeRecentTransactions) {
+            transactions = (campaign.getContractAddress() != null
+                    ? blockchainTransactionRepository.findTop10ByToOrderByCreatedAtDesc(campaign.getContractAddress())
+                    : blockchainTransactionRepository.findTop10ByOrderByCreatedAtDesc())
+                .stream()
+                .map(entityMapper::toBlockchainTransactionResponse)
+                .collect(Collectors.toList());
+        }
 
         return entityMapper.toCampaignDetail(campaign, contributorsCount, payoutsCount,
             totalProfitDistributed, payoutSummaries, transactions);
@@ -159,8 +231,9 @@ public class CampaignService {
 
     @Transactional
     public FinalizeExpiredCampaignsResponse finalizeExpired(Integer batchSize, boolean dryRun) {
-        List<Campaign> expired = campaignRepository.findExpiredOpenCampaigns(Instant.now());
+        List<Campaign> expired = campaignRepository.findByStatusAndDeadlineBefore(CampaignStatus.OPEN, Instant.now());
         int candidates = expired.size();
+        log.info("Finalize expired campaigns requested: candidates={} batchSize={} dryRun={}", candidates, batchSize, dryRun);
 
         if (!dryRun) {
             int limit = batchSize != null ? Math.min(batchSize, expired.size()) : expired.size();
@@ -168,6 +241,7 @@ public class CampaignService {
                 Campaign c = expired.get(i);
                 c.setStatus(CampaignStatus.FAILED_DEADLINE);
                 campaignRepository.save(c);
+                log.info("Campaign finalized by deadline: campaignId={}", c.getId());
             }
         }
 
@@ -243,5 +317,11 @@ public class CampaignService {
             a.setCanFinalize(false);
         }
         return a;
+    }
+
+    private static void requireAuthenticated(User user) {
+        if (user == null) {
+            throw new ForbiddenException("Authentication is required.");
+        }
     }
 }
