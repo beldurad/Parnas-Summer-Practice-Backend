@@ -22,6 +22,12 @@ server:
   servlet:
     context-path: /api/v1
 
+logging:
+  pattern:
+    level: "%5p [requestId:%X{requestId:-}]"
+  level:
+    org.example.parnasservice: INFO
+
 parnas:
   jwt:
     access-token-expiration: 900
@@ -29,6 +35,15 @@ parnas:
     secret: p3K8xJ2mN5qR7vT9wY1bC4dF6gH0jL3nP6sU8vW2xZ5aB7cE9fI1kM4oR7tY0u
   platform:
     name: Parnas
+  blockchain:
+    enabled: true
+    rpc-url: http://localhost:8545
+    chain-id: 31337
+    network: local
+    required-confirmations: 1
+    gas-limit: 3000000
+    factory-address:
+    deployer-private-key: 0x59c6995e998f97a5a0044966f094538a2c0a3bb26a0df09c9977e7805d9b83b6d
 
 springdoc:
   api-docs:

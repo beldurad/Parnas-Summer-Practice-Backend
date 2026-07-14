@@ -5,6 +5,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.UUID;
+import lombok.extern.slf4j.Slf4j;
 import org.example.parnasservice.dto.request.LoginRequest;
 import org.example.parnasservice.dto.request.LogoutRequest;
 import org.example.parnasservice.dto.request.RefreshTokenRequest;
@@ -26,6 +27,7 @@ import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AuthService {
 
     private final UserRepository userRepository;
@@ -54,6 +56,7 @@ public class AuthService {
             null
         );
         user = userRepository.save(user);
+        log.info("User registered: userId={} wallet={}", user.getId(), user.getWalletAddress());
 
         return buildAuthResponse(user);
     }
@@ -66,6 +69,7 @@ public class AuthService {
 
         user.setLastLoginAt(Instant.now());
         userRepository.save(user);
+        log.info("User logged in: userId={} wallet={}", user.getId(), user.getWalletAddress());
 
         return buildAuthResponse(user);
     }
@@ -89,6 +93,7 @@ public class AuthService {
         String accessToken = jwtProvider.generateAccessToken(user.getId(), user.getWalletAddress());
         String newRefreshToken = jwtProvider.generateRefreshToken();
         saveRefreshToken(user, newRefreshToken);
+        log.info("Refresh token rotated: userId={}", user.getId());
 
         return new TokenPair(accessToken, newRefreshToken, "Bearer", jwtProvider.getRefreshTokenExpirationSeconds());
     }
@@ -97,13 +102,17 @@ public class AuthService {
     public void logout(LogoutRequest request, UUID currentUserId) {
         if (request.isAllSessions()) {
             refreshTokenRepository.revokeAllByUserId(currentUserId);
+            log.info("User logged out from all sessions: userId={}", currentUserId);
         } else if (request.getRefreshToken() != null) {
             String tokenHash = hashToken(request.getRefreshToken());
             refreshTokenRepository.findByTokenHash(tokenHash)
                 .ifPresent(t -> {
                     t.setRevoked(true);
                     refreshTokenRepository.save(t);
+                    log.info("Refresh token revoked: userId={} tokenId={}", currentUserId, t.getId());
                 });
+        } else {
+            log.info("Logout requested without refresh token: userId={}", currentUserId);
         }
     }
 
